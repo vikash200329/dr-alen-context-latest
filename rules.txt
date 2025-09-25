@@ -1,0 +1,1476 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Backend Coding Guidelines - Alensoft15 (Async/High Concurrency Edition)
+
+## Table of Contents
+1. [Overview](mdc:#overview)
+2. [Project Structure](mdc:#project-structure)
+3. [Framework & Technology Stack](mdc:#framework--technology-stack)
+4. [Async/Concurrency Guidelines](mdc:#async-concurrency-guidelines)
+5. [Code Style & Naming Conventions](mdc:#code-style--naming-conventions)
+6. [API Development Standards](mdc:#api-development-standards)
+7. [Database Connection Management](mdc:#database-connection-management)
+8. [Error Handling Standards](mdc:#error-handling-standards)
+9. [Security Guidelines](mdc:#security-guidelines)
+10. [Performance Guidelines](mdc:#performance-guidelines)
+11. [Logging Standards](mdc:#logging-standards)
+12. [Production Code Quality Standards](mdc:#production-code-quality-standards)
+13. [Function & Method Standards](mdc:#function--method-standards)
+14. [File & Module Standards](mdc:#file--module-standards)
+15. [Code Documentation Standards](mdc:#code-documentation-standards)
+16. [Testing & Validation Standards](mdc:#testing--validation-standards)
+17. [Code Review & Quality Assurance](mdc:#code-review--quality-assurance)
+
+## Overview
+
+This document outlines the coding standards and best practices for the Alensoft15 Backend project with **high concurrency and asynchronous operations**. These guidelines ensure code consistency, maintainability, security, and performance across the development team while handling thousands of concurrent requests efficiently.
+
+**⚠️ IMPORTANT REQUIREMENTS**:
+- **Use `Request` objects for all frontend requests** (NO Pydantic models for request validation)
+- **Use ONLY raw SQL queries** (NO ORM/SQLAlchemy models)
+- **ALL endpoints MUST be async** for high concurrency support
+- **Use async database connections** with proper connection pooling
+- **Implement proper async/await patterns** throughout the codebase
+- **Follow these patterns exactly** for all new code
+
+## Quick Start Checklist
+- [ ] Use `Request` objects (never Pydantic models)
+- [ ] Use raw SQL with `text()` function for parameterized queries
+- [ ] **ALL endpoints MUST be async functions**
+- [ ] Use async database connections with proper connection management
+- [ ] Return consistent JSON format: `{'status': 'success/error', 'message': '...', 'data': ...}`
+- [ ] Handle database connections in async context managers
+- [ ] Use structured logging, never print() statements
+- [ ] Validate required fields only (existence, not data types)
+- [ ] Use parameterized queries to prevent SQL injection
+- [ ] Implement proper async error handling
+- [ ] Use asyncio.gather() for concurrent operations
+
+## Project Structure
+
+```
+BackEnd/
+├── app/
+│   ├── api/                    # API endpoints organized by domain
+│   │   ├── ghg/               # Greenhouse Gas emissions module
+│   │   ├── mactraq/           # Manufacturing tracking module
+│   │   ├── users/             # User management module
+│   │   ├── ems/               # Energy management module
+│   │   ├── db/                # Database connection utilities
+│   │   │   ├── db_connect.py   # Async database connections
+│   │   │   └── connection_pool.py # Connection pooling
+│   │   ├── routes.py          # Route imports and registration
+│   │   └── __init__.py        # API blueprint initialization
+│   ├── utils/                 # Utility functions
+│   │   ├── async_helpers.py   # Async utility functions
+│   │   └── concurrency.py     # Concurrency helpers
+│   ├── initialization.py      # FastAPI app initialization
+│   ├── error_handle.py        # Global error handling
+│   └── db_initialization.py   # Database initialization
+├── Plugins/                   # Custom plugins/extensions
+├── service_logs/              # Application logs
+├── run.py                     # Application entry point
+├── requirements.txt           # Python dependencies
+└── CODING_GUIDELINES.md       # This file
+```
+
+## Framework & Technology Stack
+
+- **Web Framework**: FastAPI (Async)
+- **Database**: Microsoft SQL Server (MSSQL)
+- **Database Access**: Raw SQL queries with async parameterized statements
+- **ASGI Server**: Uvicorn with async workers
+- **Request Handling**: FastAPI Request objects with async support
+- **CORS**: FastAPI CORS middleware
+- **Environment**: python-dotenv
+- **Async Database**: SQLAlchemy async engine with connection pooling
+- **Concurrency**: asyncio for high concurrency operations
+
+**Important Note**: We use SQLAlchemy's async `text()` function only for safe parameterized queries - no ORM features.
+
+## Async/Concurrency Guidelines (MANDATORY)
+
+### Async Function Requirements
+
+**ALL endpoint functions MUST be async:**
+
+```python
+# ✅ CORRECT - Async endpoint
+@router.post("/endpoint")
+async def endpoint(request: Request):
+    # Async implementation
+    pass
+
+# ❌ WRONG - Synchronous endpoint
+@router.post("/endpoint")
+def endpoint(request: Request):
+    # This is NOT allowed for high concurrency
+    pass
+```
+
+### Async Database Connection Patterns
+
+```python
+# ✅ CORRECT - Async database connection with context manager
+@router.post("/endpoint")
+async def endpoint(request: Request):
+    async with DatabaseSession() as session:
+        try:
+            # Database operations
+            result = await session.execute(text("SELECT * FROM table"))
+            return JSONResponse({'status': 'success', 'data': result.fetchall()})
+        except Exception as e:
+            await session.rollback()
+            raise
+        # Connection automatically closed by context manager
+```
+
+### High Concurrency Patterns
+
+```python
+# ✅ CORRECT - Concurrent processing with asyncio.gather()
+@router.post("/process-multiple")
+async def process_multiple(request: Request):
+    data = await request.json()
+    
+    # Process multiple items concurrently
+    tasks = []
+    for item in data['items']:
+        task = process_single_item(item)
+        tasks.append(task)
+    
+    # Execute all tasks concurrently
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Handle results and exceptions
+    successful_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"Error processing item {i}: {str(result)}")
+        else:
+            successful_results.append(result)
+    
+    return JSONResponse({'status': 'success', 'data': successful_results})
+```
+
+### Async Context Managers
+
+```python
+# ✅ CORRECT - Use async context managers for resource management
+async def process_with_connection():
+    async with DatabaseSession() as session:
+        # Database operations
+        result = await session.execute(text("SELECT * FROM table"))
+        return result.fetchall()
+    # Connection automatically closed
+```
+
+### Async Error Handling
+
+```python
+# ✅ CORRECT - Async error handling with proper cleanup
+@router.post("/endpoint")
+async def endpoint(request: Request):
+    connection = None
+    try:
+        data = await request.json()
+        connection = await async_connect_to_mssql()
+        
+        # Database operations
+        result = await connection.execute(text("SELECT * FROM table"))
+        return JSONResponse({'status': 'success', 'data': result.fetchall()})
+        
+    except asyncio.CancelledError:
+        logger.warning("Request was cancelled")
+        raise
+    except Exception as e:
+        logger.error(f"Error in endpoint: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={'status': 'error', 'message': 'Internal server error occurred'},
+            status_code=500
+        )
+    finally:
+        if connection:
+            await connection.close()
+```
+
+## Code Style & Naming Conventions
+
+### File Naming
+- Use **snake_case** for all Python files
+- Examples: `async_helpers.py`, `concurrency_utils.py`, `database_async.py`
+
+### Function Naming
+- Use **snake_case** for function names
+- Use descriptive, action-oriented names
+- Prefix async functions with `async_` when needed for clarity
+- Examples: `async_get_financial_years()`, `async_create_batch_tracking()`, `async_update_emission_data()`
+
+### Variable Naming
+- Use **snake_case** for variables (NOT camelCase)
+- Use descriptive names that indicate purpose
+- Examples: `company_id`, `financial_years`, `batch_status` (NOT `companyId`)
+
+### Class Naming
+- Use **PascalCase** for class names
+- Examples: `AsyncDatabaseConnection`, `ConcurrencyManager`
+
+### Import Structure
+```python
+# Standard library imports first
+import os
+import logging
+import json
+import decimal
+import datetime
+import asyncio
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
+
+# Third-party imports
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from sqlalchemy import text  # ONLY for parameterized queries, NOT ORM
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+# Local imports
+from .. import api_blueprint as api_b
+from ..db.db_connect import async_connect_to_mssql, DatabaseSession
+from ..utils.logging import get_logger
+from ..utils.async_helpers import async_process_data
+```
+
+## API Development Standards
+
+### Route Registration
+
+```python
+# app/api/routes.py
+from fastapi import APIRouter
+
+# Create API blueprint with prefix
+api_blueprint = APIRouter()
+
+# Import and include module routes
+from .ghg import router as ghg_router
+from .mactraq import router as mactraq_router
+from .users import router as users_router
+from .ems import router as ems_router
+
+# Include routers with prefixes
+api_blueprint.include_router(ghg_router, prefix="/ghg", tags=["GHG"])
+api_blueprint.include_router(mactraq_router, prefix="/mactraq", tags=["MacTraq"])
+api_blueprint.include_router(users_router, prefix="/users", tags=["Users"])
+api_blueprint.include_router(ems_router, prefix="/ems", tags=["EMS"])
+```
+
+### Complete Async Endpoint Example (MANDATORY)
+
+```python
+from fastapi import Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+import datetime
+import asyncio
+from . import router  # Import module router instead of api_blueprint
+from ..db.db_connect import async_connect_to_mssql, DatabaseSession
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+@router.post("/get-batch-details")  # Use module router with relative path
+async def get_batch_details(request: Request):
+    """
+    Get batch details for a specific machine with high concurrency support.
+    
+    Args:
+        request: FastAPI Request object containing JSON data with machine_id
+        
+    Returns:
+        JSONResponse: Batch details or error response
+    """
+    async with DatabaseSession() as session:
+        try:
+            # Extract data from request
+            data = await request.json()
+            
+            # Validate required fields
+            if not data:
+                return JSONResponse(
+                    content={
+                        'status': 'error',
+                        'message': 'Request body is required'
+                    },
+                    status_code=400
+                )
+            
+            machine_id = data.get('machine_id')
+            if not machine_id:
+                return JSONResponse(
+                    content={
+                        'status': 'error',
+                        'message': 'machine_id is required'
+                    },
+                    status_code=400
+                )
+            
+            logger.info(f"Processing batch details request for machine_id: {machine_id}")
+            
+            # Raw SQL query with joins
+            query = text("""
+                SELECT 
+                    br.batch_no as batch_id,
+                    br.status,
+                    format(br.start_time, 'dd-MMM-yyyy HH:mm') as start_time,
+                    format(br.modified_at, 'dd-MMM-yyyy HH:mm') as last_updated,
+                    d.name as department,
+                    m.name as machine_name,
+                    ps.name as current_stage,
+                    br.completion_percentage,
+                    JSON_VALUE(bi.attributes, '$.workcenter_name') AS workcenter_name,
+                    JSON_VALUE(bi.attributes, '$.operation_no') AS operation_no,
+                    JSON_VALUE(bi.attributes, '$.customer_name') AS customer_name
+                FROM 
+                    mactraq.batch_running br
+                JOIN 
+                    mactraq.machines m ON br.machine_id = m.id
+                JOIN 
+                    mactraq.departments d ON br.department_id = d.id
+                LEFT JOIN 
+                    mactraq.batch_information bi ON br.batch_info_id = bi.id
+                LEFT JOIN 
+                    mactraq.production_stages ps ON br.stage_id = ps.id
+                WHERE 
+                    br.machine_id = :machine_id 
+                    AND br.e_deleted = 0
+                ORDER BY 
+                    br.start_time DESC
+            """)
+            
+            result = await session.execute(query, {"machine_id": machine_id})
+            columns = result.keys()
+            rows = result.fetchall()
+            
+            # Process results with proper type handling
+            data_list = []
+            for row in rows:
+                entry = {}
+                for i, col in enumerate(columns):
+                    if isinstance(row[i], decimal.Decimal):
+                        entry[col] = float(row[i])
+                    elif isinstance(row[i], (datetime.date, datetime.datetime)):
+                        entry[col] = row[i].isoformat() if row[i] else None
+                    else:
+                        entry[col] = row[i]
+                data_list.append(entry)
+            
+            logger.info(f"Retrieved {len(data_list)} batch records")
+            
+            return JSONResponse({
+                'status': 'success',
+                'data': data_list,
+                'message': 'Batch details retrieved successfully'
+            })
+            
+        except json.JSONDecodeError:
+            return JSONResponse(
+                content={
+                    'status': 'error',
+                    'message': 'Invalid JSON in request body'
+                },
+                status_code=400
+            )
+        except Exception as e:
+            logger.error(f"Error in get_batch_details: {str(e)}", exc_info=True)
+            return JSONResponse(
+                content={
+                    'status': 'error',
+                    'message': 'Internal server error occurred'
+                },
+                status_code=500
+            )
+```
+
+### High Concurrency Endpoint Example
+
+```python
+@router.post("/process-multiple-meters")
+async def process_multiple_meters(request: Request):
+    """
+    Process multiple meters concurrently for high performance.
+    """
+    async with DatabaseSession() as session:
+        try:
+            data = await request.json()
+            meters = data.get('meters', [])
+            
+            if not meters:
+                return JSONResponse(
+                    content={'status': 'error', 'message': 'No meters provided'},
+                    status_code=400
+                )
+            
+            # Process all meters concurrently
+            tasks = []
+            for meter in meters:
+                task = process_single_meter_async(session, meter)
+                tasks.append(task)
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            successful_results = []
+            errors = []
+            
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing meter {i}: {str(result)}")
+                    errors.append(f"Meter {i}: {str(result)}")
+                else:
+                    successful_results.append(result)
+            
+            return JSONResponse({
+                'status': 'success',
+                'data': successful_results,
+                'errors': errors,
+                'message': f'Processed {len(successful_results)} meters successfully'
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in process_multiple_meters: {str(e)}", exc_info=True)
+            return JSONResponse(
+                content={'status': 'error', 'message': 'Internal server error occurred'},
+                status_code=500
+            )
+
+async def process_single_meter_async(session: AsyncSession, meter: dict):
+    """Process a single meter asynchronously."""
+    try:
+        meter_id = meter.get('id')
+        query = text("SELECT * FROM meters WHERE id = :meter_id")
+        result = await session.execute(query, {"meter_id": meter_id})
+        return result.fetchall()
+    except Exception as e:
+        logger.error(f"Error processing meter {meter_id}: {str(e)}")
+        raise
+```
+
+## Database Connection Management (MANDATORY)
+
+### Async Database Connection Setup
+
+```python
+# app/api/db/db_connect.py
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import text
+import asyncio
+from contextlib import asynccontextmanager
+
+# Async engine configuration for high concurrency
+async_engine = create_async_engine(
+    async_connection_string,
+    pool_size=200,  # Increased pool size for high concurrency
+    max_overflow=200,  # Additional connections for burst traffic
+    pool_timeout=10,  # Timeout for connection acquisition
+    pool_pre_ping=True,  # Validate connections before use
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    echo=False  # Set to True for SQL debugging
+)
+
+# Session factory for high concurrency
+AsyncSessionLocal = async_sessionmaker(
+    async_engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+    autoflush=False,  # Disable autoflush for better performance
+    autocommit=False
+)
+
+@asynccontextmanager
+async def DatabaseSession():
+    """Async context manager for database sessions."""
+    session = AsyncSessionLocal()
+    try:
+        yield session
+    except Exception as e:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+async def async_connect_to_mssql():
+    """Get async database connection with retry logic."""
+    max_retries = 3
+    base_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            connection = await async_engine.connect()
+            return connection
+        except Exception as e:
+            logger.warning(f"Connection attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                # Exponential backoff with jitter
+                delay = base_delay * (2 ** attempt) + (0.01 * attempt)
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"All connection attempts failed after {max_retries} retries")
+                raise
+```
+
+### Connection Pooling Best Practices
+
+```python
+# ✅ CORRECT - Use connection pooling for high concurrency
+@router.post("/high-concurrency-endpoint")
+async def high_concurrency_endpoint(request: Request):
+    async with DatabaseSession() as session:
+        # Multiple concurrent operations using the same session
+        tasks = [
+            session.execute(text("SELECT * FROM table1")),
+            session.execute(text("SELECT * FROM table2")),
+            session.execute(text("SELECT * FROM table3"))
+        ]
+        
+        results = await asyncio.gather(*tasks)
+        return JSONResponse({'status': 'success', 'data': results})
+```
+
+### Connection Retry Logic
+
+```python
+async def get_connection_with_retry(max_retries=3, delay=0.1):
+    """Get database connection with retry logic for high concurrency."""
+    for attempt in range(max_retries):
+        try:
+            async with DatabaseSession() as session:
+                return session
+        except Exception as e:
+            logger.warning(f"Connection attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
+            else:
+                logger.error(f"All connection attempts failed after {max_retries} retries")
+                raise
+```
+
+## Error Handling Standards (MANDATORY)
+
+### Async Error Handling Patterns
+
+```python
+@router.post("/endpoint")
+async def endpoint(request: Request):
+    async with DatabaseSession() as session:
+        try:
+            # Extract and validate request data
+            data = await request.json()
+            
+            if not data:
+                return JSONResponse(
+                    content={'status': 'error', 'message': 'Request body is required'},
+                    status_code=400
+                )
+            
+            required_field = data.get('required_field')
+            if not required_field:
+                return JSONResponse(
+                    content={'status': 'error', 'message': 'required_field is required'},
+                    status_code=400
+                )
+            
+            # Database operations
+            result = await session.execute(text("SELECT * FROM table WHERE id = :id"), {"id": required_field})
+            data_list = result.fetchall()
+            
+            return JSONResponse({
+                'status': 'success',
+                'data': data_list
+            })
+            
+        except asyncio.CancelledError:
+            logger.warning("Request was cancelled")
+            raise
+        except json.JSONDecodeError:
+            return JSONResponse(
+                content={'status': 'error', 'message': 'Invalid JSON in request body'},
+                status_code=400
+            )
+        except Exception as e:
+            logger.error(f"Error in endpoint: {str(e)}", exc_info=True)
+            return JSONResponse(
+                content={'status': 'error', 'message': 'Internal server error occurred'},
+                status_code=500
+            )
+```
+
+### Global Async Error Handler
+
+```python
+# app/error_handle.py
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import logging
+import asyncio
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle general exceptions in async context."""
+    logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": "Internal server error",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+async def asyncio_cancelled_handler(request: Request, exc: asyncio.CancelledError):
+    """Handle asyncio cancellation."""
+    logger.warning(f"Request cancelled: {str(exc)}")
+    return JSONResponse(
+        status_code=499,
+        content={
+            "status": "error",
+            "message": "Request was cancelled",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+```
+
+## Security Guidelines (MANDATORY)
+
+### Async Input Validation
+
+```python
+async def validate_request_data_async(data: dict, required_fields: list):
+    """
+    Validate request data asynchronously - checks field existence and non-empty values only.
+    
+    Args:
+        data: Request data dictionary
+        required_fields: List of required field names
+        
+    Raises:
+        ValueError: If validation fails
+    """
+    if not data:
+        raise ValueError("Request body is required")
+    
+    for field in required_fields:
+        if field not in data:
+            raise ValueError(f"{field} is required")
+        
+        value = data[field]
+        # Check for None, empty strings, or whitespace-only strings
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError(f"{field} cannot be empty")
+
+# Usage in async endpoints
+@router.post("/endpoint")
+async def endpoint(request: Request):
+    try:
+        data = await request.json()
+        await validate_request_data_async(data, ['field1', 'field2'])
+    except ValueError as e:
+        return JSONResponse(
+            content={'status': 'error', 'message': str(e)},
+            status_code=400
+        )
+```
+
+### Async SQL Injection Prevention
+
+```python
+# ✅ CORRECT - Use parameterized queries with async
+async def get_user_data_async(session: AsyncSession, user_id: int):
+    query = text("SELECT * FROM users WHERE id = :user_id AND active = 1")
+    result = await session.execute(query, {"user_id": user_id})
+    return result.fetchall()
+
+# ❌ WRONG - Never use string formatting
+async def get_user_data_wrong(session: AsyncSession, user_id: int):
+    query = f"SELECT * FROM users WHERE id = {user_id}"  # SQL injection risk
+    result = await session.execute(text(query))
+    return result.fetchall()
+```
+
+## Performance Guidelines (MANDATORY)
+
+### Async Query Optimization
+
+```python
+# Use proper indexing hints and limit results with async
+async def get_optimized_data_async(session: AsyncSession, start_date: str, limit: int = 100):
+    query = text("""
+        SELECT TOP :limit
+            id,
+            name,
+            created_at
+        FROM table_name WITH (NOLOCK)
+        WHERE e_deleted = 0 
+        AND created_at >= :start_date
+        ORDER BY created_at DESC
+    """)
+    
+    result = await session.execute(query, {"limit": limit, "start_date": start_date})
+    return result.fetchall()
+
+# Use pagination for large datasets with async
+async def get_paginated_data_async(session: AsyncSession, offset: int, limit: int):
+    query = text("""
+        SELECT 
+            id,
+            name,
+            created_at
+        FROM table_name 
+        WHERE e_deleted = 0
+        ORDER BY created_at DESC
+        OFFSET :offset ROWS 
+        FETCH NEXT :limit ROWS ONLY
+    """)
+    
+    result = await session.execute(query, {"offset": offset, "limit": limit})
+    return result.fetchall()
+```
+
+### High Concurrency Patterns
+
+```python
+# ✅ CORRECT - Process multiple items concurrently
+@router.post("/process-batch")
+async def process_batch(request: Request):
+    async with DatabaseSession() as session:
+        try:
+            data = await request.json()
+            items = data.get('items', [])
+            
+            # Process all items concurrently
+            tasks = []
+            for item in items:
+                task = process_single_item_async(session, item)
+                tasks.append(task)
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Handle results and exceptions
+            successful_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing item {i}: {str(result)}")
+                else:
+                    successful_results.append(result)
+            
+            return JSONResponse({
+                'status': 'success',
+                'data': successful_results,
+                'processed_count': len(successful_results)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in process_batch: {str(e)}", exc_info=True)
+            return JSONResponse(
+                content={'status': 'error', 'message': 'Internal server error occurred'},
+                status_code=500
+            )
+
+async def process_single_item_async(session: AsyncSession, item: dict):
+    """Process a single item asynchronously."""
+    try:
+        # Database operation
+        query = text("INSERT INTO items (name, value) VALUES (:name, :value)")
+        await session.execute(query, {"name": item['name'], "value": item['value']})
+        await session.commit()
+        return {"id": item.get('id'), "status": "processed"}
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error processing item {item.get('id')}: {str(e)}")
+        raise
+```
+
+### Connection Pool Optimization
+
+```python
+# Optimized connection pool settings for high concurrency
+async_engine = create_async_engine(
+    async_connection_string,
+    pool_size=200,  # Base pool size
+    max_overflow=200,  # Additional connections for burst traffic
+    pool_timeout=10,  # Timeout for connection acquisition
+    pool_pre_ping=True,  # Validate connections before use
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    echo=False,  # Set to True for SQL debugging
+    future=True  # Use future-style engine
+)
+```
+
+## Logging Standards (MANDATORY)
+
+### Async Structured Logging
+
+```python
+# app/utils/logging.py
+import logging
+import json
+import asyncio
+from datetime import datetime
+
+class AsyncStructuredFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+            "coroutine": asyncio.current_task().get_name() if asyncio.current_task() else None
+        }
+        
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+            
+        return json.dumps(log_entry)
+
+def get_logger(name: str) -> logging.Logger:
+    logger = logging.getLogger(name)
+    
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(AsyncStructuredFormatter())
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    
+    return logger
+
+# Usage - NEVER use print() statements
+logger = get_logger(__name__)
+
+# Async logging examples
+logger.info(f"Processing request for machine_id: {machine_id}")
+logger.error(f"Database operation failed: {str(e)}", exc_info=True)
+logger.warning(f"Connection retry attempt {attempt} for {endpoint}")
+```
+
+### Async Performance Logging
+
+```python
+async def log_performance_async(func_name: str, start_time: float):
+    """Log performance metrics for async operations."""
+    end_time = asyncio.get_event_loop().time()
+    duration = end_time - start_time
+    logger.info(f"Async operation {func_name} completed in {duration:.3f}s")
+
+# Usage in async functions
+@router.post("/performance-endpoint")
+async def performance_endpoint(request: Request):
+    start_time = asyncio.get_event_loop().time()
+    
+    try:
+        # Your async operations here
+        data = await request.json()
+        async with DatabaseSession() as session:
+            result = await session.execute(text("SELECT * FROM table"))
+            data_list = result.fetchall()
+        
+        await log_performance_async("performance_endpoint", start_time)
+        return JSONResponse({'status': 'success', 'data': data_list})
+        
+    except Exception as e:
+        await log_performance_async("performance_endpoint", start_time)
+        logger.error(f"Error in performance_endpoint: {str(e)}", exc_info=True)
+        raise
+```
+
+## Common Mistakes to Avoid
+
+❌ **Wrong Async Patterns:**
+- Using synchronous functions in async endpoints
+- Not using async/await for database operations
+- Blocking async operations with synchronous calls
+- Not properly closing async database connections
+- Using print() instead of async logging
+- Not handling asyncio.CancelledError
+- Mixing sync and async database connections
+- Not using asyncio.gather() for concurrent operations
+
+✅ **Correct Async Patterns:**
+- Use async functions for all endpoints
+- Use async/await for all database operations
+- Use async context managers for resource management
+- Use asyncio.gather() for concurrent operations
+- Handle asyncio.CancelledError properly
+- Use structured async logging
+- Use async database connections consistently
+- Implement proper async error handling
+
+## Environment Setup
+
+Create a `.env` file in your project root:
+
+```env
+# Database Configuration
+DB_SERVER=your_server_name
+DB_NAME=your_database_name
+DB_USERNAME=your_username
+DB_PASSWORD=your_password
+DB_DRIVER=ODBC Driver 17 for SQL Server
+
+# Async Configuration
+ASYNC_POOL_SIZE=200
+ASYNC_MAX_OVERFLOW=200
+ASYNC_POOL_TIMEOUT=10
+ASYNC_POOL_RECYCLE=3600
+
+# Application Configuration
+DEBUG=False
+LOG_LEVEL=INFO
+CORS_ORIGINS=http://localhost:3000,http://localhost:8080
+
+# Concurrency Configuration
+MAX_CONCURRENT_REQUESTS=1000
+REQUEST_TIMEOUT=30
+```
+
+## Best Practices Summary
+
+1. **Async First**: All endpoints MUST be async functions
+2. **Database**: Use async database connections with proper connection pooling
+3. **Concurrency**: Use asyncio.gather() for concurrent operations
+4. **Resource Management**: Use async context managers for database sessions
+5. **Error Handling**: Implement comprehensive async error handling
+6. **Performance**: Optimize for high concurrency with proper connection pooling
+7. **Logging**: Use structured async logging throughout
+8. **Security**: Always validate inputs and use parameterized queries
+9. **Monitoring**: Implement proper async performance monitoring
+10. **Maintainability**: Write clean, readable, and maintainable async code
+
+---
+
+**⚠️ CRITICAL REQUIREMENTS**:
+- **ALL new endpoints MUST be async functions** for high concurrency support
+- **ALL database operations MUST use async connections** with proper connection pooling
+- **ALL `print()` statements MUST be removed** and replaced with structured async logging
+- **ALL response formats MUST be consistent** across all endpoints
+- **NO field datatype validation required** - just check if field exists and is not empty
+- **Use asyncio.gather() for concurrent operations** to maximize performance
+- **Implement proper async error handling** with asyncio.CancelledError support
+
+## Production Code Quality Standards (MANDATORY)
+
+### Code Quality Metrics
+- **Cyclomatic Complexity**: Maximum 10 per function
+- **Function Length**: Maximum 50 lines per function
+- **File Length**: Maximum 500 lines per file
+- **Class Length**: Maximum 300 lines per class
+- **Method Length**: Maximum 30 lines per method
+- **Parameter Count**: Maximum 5 parameters per function
+- **Nesting Depth**: Maximum 4 levels of nesting
+- **Line Length**: Maximum 120 characters per line
+- **Comment Density**: Minimum 20% of code should be comments
+- **Test Coverage**: Minimum 80% code coverage
+
+### Code Complexity Guidelines
+
+```python
+# ✅ GOOD - Simple, focused function
+async def get_user_by_id(session: AsyncSession, user_id: int) -> Optional[dict]:
+    """Get user by ID with proper error handling."""
+    try:
+        query = text("SELECT * FROM users WHERE id = :user_id")
+        result = await session.execute(query, {"user_id": user_id})
+        return result.fetchone()
+    except Exception as e:
+        logger.error(f"Error getting user {user_id}: {str(e)}")
+        return None
+
+# ❌ BAD - Too complex, multiple responsibilities
+async def process_user_data_and_send_notifications_and_update_analytics(session, user_id, data, notifications, analytics):
+    # This function does too many things - should be split
+    pass
+```
+
+### Code Maintainability Standards
+
+```python
+# ✅ GOOD - Single responsibility, clear naming
+async def calculate_energy_consumption(meter_readings: List[dict]) -> float:
+    """Calculate total energy consumption from meter readings."""
+    total_consumption = 0.0
+    for reading in meter_readings:
+        if reading.get('value') and reading.get('value') > 0:
+            total_consumption += float(reading['value'])
+    return total_consumption
+
+# ✅ GOOD - Separated concerns
+async def validate_meter_reading(reading: dict) -> bool:
+    """Validate a single meter reading."""
+    return (
+        reading.get('value') is not None and
+        reading.get('timestamp') is not None and
+        reading.get('meter_id') is not None
+    )
+
+async def process_meter_readings(readings: List[dict]) -> List[dict]:
+    """Process and validate meter readings."""
+    valid_readings = []
+    for reading in readings:
+        if await validate_meter_reading(reading):
+            valid_readings.append(reading)
+    return valid_readings
+```
+
+## Function & Method Standards (MANDATORY)
+
+### Function Length Guidelines
+- **Maximum 50 lines** per function (including comments and docstrings)
+- **Maximum 30 lines** for simple utility functions
+- **Maximum 20 lines** for validation functions
+- **Split functions** that exceed these limits into smaller, focused functions
+
+### Function Complexity Rules
+- **Maximum 5 parameters** per function
+- **Maximum 10 cyclomatic complexity** per function
+- **Single responsibility** - one function should do one thing well
+- **Clear naming** - function name should describe what it does
+
+### Function Splitting Examples
+
+```python
+# ❌ BAD - Too long and complex
+async def process_batch_data(request: Request):
+    """Process batch data - TOO COMPLEX, NEEDS SPLITTING."""
+    data = await request.json()
+    
+    # Validation (should be separate function)
+    if not data:
+        return JSONResponse({'status': 'error', 'message': 'No data'}, status_code=400)
+    
+    if 'batch_id' not in data:
+        return JSONResponse({'status': 'error', 'message': 'batch_id required'}, status_code=400)
+    
+    # Database operations (should be separate function)
+    async with DatabaseSession() as session:
+        query = text("SELECT * FROM batches WHERE id = :batch_id")
+        result = await session.execute(query, {"batch_id": data['batch_id']})
+        batch_data = result.fetchall()
+        
+        # Processing (should be separate function)
+        processed_data = []
+        for row in batch_data:
+            processed_row = {
+                'id': row.id,
+                'name': row.name,
+                'status': row.status,
+                'created_at': row.created_at.isoformat() if row.created_at else None
+            }
+            processed_data.append(processed_row)
+        
+        # Response formatting (should be separate function)
+        return JSONResponse({
+            'status': 'success',
+            'data': processed_data,
+            'count': len(processed_data)
+        })
+
+# ✅ GOOD - Properly split into focused functions
+async def validate_batch_request(data: dict) -> tuple[bool, str]:
+    """Validate batch request data."""
+    if not data:
+        return False, "Request data is required"
+    
+    if 'batch_id' not in data:
+        return False, "batch_id is required"
+    
+    return True, ""
+
+async def get_batch_data_async(session: AsyncSession, batch_id: int) -> List[dict]:
+    """Get batch data from database."""
+    query = text("SELECT * FROM batches WHERE id = :batch_id")
+    result = await session.execute(query, {"batch_id": batch_id})
+    return result.fetchall()
+
+async def process_batch_data_async(batch_data: List[dict]) -> List[dict]:
+    """Process batch data for response."""
+    processed_data = []
+    for row in batch_data:
+        processed_row = {
+            'id': row.id,
+            'name': row.name,
+            'status': row.status,
+            'created_at': row.created_at.isoformat() if row.created_at else None
+        }
+        processed_data.append(processed_row)
+    return processed_data
+
+async def create_batch_response(processed_data: List[dict]) -> JSONResponse:
+    """Create standardized batch response."""
+    return JSONResponse({
+        'status': 'success',
+        'data': processed_data,
+        'count': len(processed_data)
+    })
+
+# Main endpoint function - now clean and focused
+@router.post("/process-batch")
+async def process_batch(request: Request):
+    """Process batch data with proper separation of concerns."""
+    try:
+        data = await request.json()
+        
+        # Validate request
+        is_valid, error_message = await validate_batch_request(data)
+        if not is_valid:
+            return JSONResponse({'status': 'error', 'message': error_message}, status_code=400)
+        
+        # Get data
+        async with DatabaseSession() as session:
+            batch_data = await get_batch_data_async(session, data['batch_id'])
+            
+            # Process data
+            processed_data = await process_batch_data_async(batch_data)
+            
+            # Return response
+            return await create_batch_response(processed_data)
+            
+    except Exception as e:
+        logger.error(f"Error in process_batch: {str(e)}", exc_info=True)
+        return JSONResponse({'status': 'error', 'message': 'Internal server error'}, status_code=500)
+```
+
+### Parameter Guidelines
+
+```python
+# ✅ GOOD - Few parameters, clear purpose
+async def create_user(session: AsyncSession, name: str, email: str, role: str) -> dict:
+    """Create a new user with minimal parameters."""
+    pass
+
+# ✅ GOOD - Use data classes for complex parameters
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class UserCreateRequest:
+    name: str
+    email: str
+    role: str
+    department: Optional[str] = None
+    phone: Optional[str] = None
+
+async def create_user_with_details(session: AsyncSession, user_data: UserCreateRequest) -> dict:
+    """Create user with structured data."""
+    pass
+
+# ❌ BAD - Too many parameters
+async def create_user_bad(session, name, email, role, department, phone, address, city, state, zip_code, country):
+    """Too many parameters - use data class instead."""
+    pass
+```
+
+## File & Module Standards (MANDATORY)
+
+### File Size Guidelines
+- **Maximum 500 lines** per Python file
+- **Maximum 300 lines** per class
+- **Split large files** into smaller, focused modules
+- **One class per file** for complex classes
+- **Group related functions** in the same file
+
+### File Organization Standards
+
+```python
+# ✅ GOOD - Well-organized file structure
+"""
+user_management.py - User management operations
+Maximum 500 lines, focused on user operations only
+"""
+
+# Standard library imports
+import asyncio
+import logging
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+
+# Third-party imports
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# Local imports
+from ..db.db_connect import DatabaseSession
+from ..utils.logging import get_logger
+from ..models.user_models import UserCreateRequest, UserUpdateRequest
+
+# Constants
+MAX_USERS_PER_PAGE = 100
+DEFAULT_USER_ROLE = "user"
+
+# Logger
+logger = get_logger(__name__)
+
+# Data classes
+@dataclass
+class UserResponse:
+    id: int
+    name: str
+    email: str
+    role: str
+    created_at: str
+
+# Validation functions
+async def validate_user_data(user_data: dict) -> tuple[bool, str]:
+    """Validate user data."""
+    # Implementation here
+    pass
+
+# Database operations
+async def get_user_by_id(session: AsyncSession, user_id: int) -> Optional[dict]:
+    """Get user by ID."""
+    # Implementation here
+    pass
+
+# Business logic
+async def process_user_creation(user_data: UserCreateRequest) -> dict:
+    """Process user creation logic."""
+    # Implementation here
+    pass
+
+# API endpoints
+@router.post("/users")
+async def create_user(request: Request):
+    """Create a new user."""
+    # Implementation here
+    pass
+
+# Utility functions
+def format_user_response(user_data: dict) -> UserResponse:
+    """Format user data for response."""
+    # Implementation here
+    pass
+```
+
+### Module Splitting Guidelines
+
+```python
+# ❌ BAD - Single large file with everything
+# user_management.py (1000+ lines)
+# - User CRUD operations
+# - Authentication logic
+# - Authorization logic
+# - User validation
+# - User reporting
+# - User analytics
+# - User notifications
+
+# ✅ GOOD - Properly split modules
+# user_management/
+# ├── __init__.py
+# ├── crud.py              # User CRUD operations (300 lines)
+# ├── auth.py              # Authentication logic (200 lines)
+# ├── authorization.py    # Authorization logic (150 lines)
+# ├── validation.py        # User validation (100 lines)
+# ├── reporting.py         # User reporting (200 lines)
+# ├── analytics.py         # User analytics (150 lines)
+# └── notifications.py     # User notifications (100 lines)
+```
+
+### Class Organization Standards
+
+```python
+# ✅ GOOD - Well-organized class
+class UserManager:
+    """User management operations - Maximum 300 lines."""
+    
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.logger = get_logger(__name__)
+    
+    # Public methods (business logic)
+    async def create_user(self, user_data: UserCreateRequest) -> dict:
+        """Create a new user."""
+        # Implementation here
+        pass
+    
+    async def get_user(self, user_id: int) -> Optional[dict]:
+        """Get user by ID."""
+        # Implementation here
+        pass
+    
+    # Private methods (internal logic)
+    async def _validate_user_data(self, user_data: dict) -> bool:
+        """Validate user data internally."""
+        # Implementation here
+        pass
+    
+    async def _save_user_to_db(self, user_data: dict) -> dict:
+        """Save user to database."""
+        # Implementation here
+        pass
+```
+
+## Code Documentation Standards (MANDATORY)
+
+### Function Documentation
+
+```python
+async def calculate_energy_efficiency(
+    meter_readings: List[dict], 
+    baseline_consumption: float,
+    time_period: str = "monthly"
+) -> Dict[str, Any]:
+    """
+    Calculate energy efficiency metrics for a given time period.
+    
+    Args:
+        meter_readings: List of meter reading dictionaries with 'value' and 'timestamp'
+        baseline_consumption: Baseline consumption value for comparison
+        time_period: Time period for calculation ('daily', 'weekly', 'monthly')
+        
+    Returns:
+        Dictionary containing:
+            - efficiency_score: Float between 0-100
+            - consumption_trend: String describing trend ('increasing', 'decreasing', 'stable')
+            - recommendations: List of efficiency improvement suggestions
+            - savings_potential: Estimated savings in percentage
+            
+    Raises:
+        ValueError: If meter_readings is empty or baseline_consumption is negative
+        TypeError: If meter_readings contains invalid data types
+        
+    Example:
+        >>> readings = [{'value': 100, 'timestamp': '2025-01-01T00:00:00'}]
+        >>> result = await calculate_energy_efficiency(readings, 120.0, 'monthly')
+        >>> print(result['efficiency_score'])
+        83.33
+    """
+    # Implementation here
+    pass
+```
+
+### Class Documentation
+
+```python
+class EnergyAnalytics:
+    """
+    Energy analytics and reporting operations.
+    
+    This class provides comprehensive energy analytics including consumption analysis,
+    efficiency calculations, trend analysis, and reporting capabilities for energy
+    management systems.
+    
+    Attributes:
+        session (AsyncSession): Database session for data operations
+        logger (Logger): Logger instance for operation tracking
+        config (dict): Configuration settings for analytics
+        
+    Example:
+        >>> async with DatabaseSession() as session:
+        ...     analytics = EnergyAnalytics(session)
+        ...     report = await analytics.generate_monthly_report(2025, 1)
+    """
+    
+    def __init__(self, session: AsyncSession, config: Optional[dict] = None):
+        """
+        Initialize EnergyAnalytics instance.
+        
+        Args:
+            session: Database session for data operations
+            config: Optional configuration dictionary
+        """
+        self.session = session
+        self.logger = get_logger(__name__)
+        self.config = config or {}
+```
+
+### Module Documentation
+
+```python
+"""
+Energy Management System (EMS) - Analytics Module
+
+This module provides comprehensive energy analytics and reporting capabilities
+for the Alensoft15 Energy Management System. It includes consumption analysis,
+efficiency calculations, trend analysis, and automated reporting.
+
+Key Features:
+- Real-time energy consumption analysis
+- Historical trend analysis and forecasting
+- Efficiency calculations and benchmarking
+- Automated report generation
+- Performance optimization recommendations
+
+Classes:
+    EnergyAnalytics: Main analytics engine
+    ConsumptionAnalyzer: Consumption pattern analysis
+    EfficiencyCalculator: Efficiency metrics calculation
+    ReportGenerator: Automated report generation
+
+Functions:
+    calculate_energy_savings: Calculate potential energy savings
+    generate_efficiency_report: Generate efficiency analysis report
+    analyze_consumption_trends: Analyze consumption patterns
+
+Example Usage:
+    >>> from .analytics import EnergyAnalytics
+    >>> async with DatabaseSession() as session:
+    ...     analytics = EnergyAnalytics(session)
+    ...     report = await analytics.generate_monthly_report(2025, 1)
+
+Author: Alensoft Development Team
+Version: 1.0.0
+Last Updated: January 2025
+"""
+```
+
+## Code Review & Quality Assurance (MANDATORY)
+
+### Code Review Checklist
+
+#### Function Review Checklist
+- [ ] Function is under 50 lines
+- [ ] Function has single responsibility
+- [ ] Function name clearly describes purpose
+- [ ] Function has proper documentation
+- [ ] Function has proper error handling
+- [ ] Function has appropriate logging
+- [ ] Function parameters are minimal (≤5)
+- [ ] Function has unit tests
+- [ ] Function follows async patterns correctly
+
+#### File Review Checklist
+- [ ] File is under 500 lines
+- [ ] File has clear purpose and scope
+- [ ] File has proper imports organization
+- [ ] File has comprehensive documentation
+- [ ] File follows naming conventions
+- [ ] File has appropriate error handling
+- [ ] File has proper logging
+- [ ] File has integration tests
+
+#### Class Review Checklist
+- [ ] Class is under 300 lines
+- [ ] Class has single responsibility
+- [ ] Class has proper encapsulation
+- [ ] Class methods are focused and small
+- [ ] Class has comprehensive documentation
+- [ ] Class has proper error handling
+- [ ] Class has unit tests
+- [ ] Class follows async patterns
+
+
+
+
+**Last Updated**: January 2025
+**Version**: 7.0 (Production-Ready Async/High Concurrency Edition)
